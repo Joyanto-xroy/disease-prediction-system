@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Clinical Support System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="logo">
+                <h2>Clinical Support System</h2>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="dashboard.html" class="active">Dashboard</a></li>
+                <li><a href="#" id="logoutBtn" class="logout-btn">Logout</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <div class="dashboard-container">
+            <div class="dashboard-header">
+                <h1>Welcome, <span id="userName">User</span></h1>
+                <p class="user-role">Role: <span id="userRole">-</span></p>
+            </div>
+
+            <div class="dashboard-content">
+                <div class="info-card">
+                    <h3>Account Information</h3>
+                    <div class="info-row">
+                        <span class="info-label">Name:</span>
+                        <span id="displayName" class="info-value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Email:</span>
+                        <span id="displayEmail" class="info-value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Role:</span>
+                        <span id="displayRole" class="info-value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Member Since:</span>
+                        <span id="displayCreated" class="info-value">-</span>
+                    </div>
+                </div>
+
+                <div class="dashboard-message">
+                    <h3>Dashboard Overview</h3>
+                    <p>Welcome to your clinical support dashboard. This is where you'll manage patient records, appointments, and clinical operations.</p>
+                    <p class="note">Additional features will be added in future updates.</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <p>&copy; 2024 Clinical Support System. All rights reserved.</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script type="module" src="dashboard.js"></script>
+</body>
+</html>
