@@ -1,0 +1,12 @@
+{
+  "name": "clinical-support-system",
+  "private": true,
+  "scripts": {
+    "dev": "npx http-server -p 3000 -o",
+    "build": "echo 'Build completed successfully'",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
