@@ -13,6 +13,21 @@ function showError(message) {
     }
 }
 
+// helper to build a user-friendly message from a Supabase error object
+function formatSupabaseError(err) {
+    if (!err) return 'Unknown error';
+    if (typeof err === 'string') return err;
+    let msg = err.message || '';
+    // common scenario: schema not set up
+    if (msg.includes('relation "profiles" does not exist') ||
+        msg.includes('permission denied for relation profiles')) {
+        return 'Database not initialized. Run the SQL setup script in your Supabase project.';
+    }
+    if (err.details) msg += ' ' + err.details;
+    if (err.hint) msg += ' ' + err.hint;
+    return msg || JSON.stringify(err);
+}
+
 function showSuccess(message) {
     const errorDiv = document.getElementById('errorMessage');
     const successDiv = document.getElementById('successMessage');
@@ -51,7 +66,54 @@ async function handleLogin(e) {
             password: password,
         });
 
-        if (error) throw error;
+        if (error) {
+            console.error('signInWithPassword error object:', error);
+            throw error;
+        }
+
+        // Read role and verification_status from JWT user_metadata.
+        // This avoids querying the profiles table, which would trigger
+        // the recursive RLS policy and cause an infinite recursion error.
+        const meta = data.user.user_metadata || {};
+        const role = meta.role || 'doctor';
+        const verificationStatus = meta.verification_status;
+
+        // For doctors, we also need to check verification from the DB
+        // but only if metadata doesn't have it (fallback: try profiles table).
+        // If the metadata has the verification_status, use it directly.
+        if (role === 'doctor') {
+            // Try reading from metadata first
+            if (verificationStatus && verificationStatus !== 'verified') {
+                await supabase.auth.signOut();
+                showError('Your account is pending verification by an administrator. Please wait for approval.');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Login';
+                return;
+            }
+
+            // If metadata doesn't have verification_status, query profiles with a safer approach
+            if (!verificationStatus) {
+                try {
+                    const { data: profile } = await supabase
+                        .from('profiles')
+                        .select('verification_status')
+                        .eq('id', data.user.id)
+                        .maybeSingle();
+
+                    if (profile && profile.verification_status !== 'verified') {
+                        await supabase.auth.signOut();
+                        showError('Your account is pending verification by an administrator. Please wait for approval.');
+                        loginBtn.disabled = false;
+                        loginBtn.textContent = 'Login';
+                        return;
+                    }
+                } catch (profileErr) {
+                    // If profile query fails (e.g. due to RLS), allow login to proceed
+                    // The dashboard will handle any access control
+                    console.warn('Could not verify doctor status via profiles table:', profileErr.message);
+                }
+            }
+        }
 
         showSuccess('Login successful! Redirecting...');
 
@@ -60,7 +122,9 @@ async function handleLogin(e) {
         }, 1000);
 
     } catch (error) {
-        showError(error.message || 'Login failed. Please check your credentials.');
+        console.error('Login failed:', error);
+        let msg = formatSupabaseError(error);
+        showError(msg);
         loginBtn.disabled = false;
         loginBtn.textContent = 'Login';
     }
@@ -70,102 +134,80 @@ async function handleRegister(e) {
     e.preventDefault();
     hideMessages();
 
-    const fullName = document.getElementById('fullName').value;
-    const email = document.getElementById('email').value;
+    const fullName = document.getElementById('fullName').value.trim();
+    const email = document.getElementById('email').value.trim();
     const role = document.getElementById('role').value;
     const password = document.getElementById('password').value;
     const confirmPassword = document.getElementById('confirmPassword').value;
     const registerBtn = document.getElementById('registerBtn');
 
-    // role‑specific values
+    if (!role) { showError('Please select a role'); return; }
+    if (password !== confirmPassword) { showError('Passwords do not match'); return; }
+    if (password.length < 8) { showError('Password must be at least 8 characters'); return; }
+
+    // role-specific values
     let extraData = {};
     let fileInput = null;
 
     if (role === 'doctor') {
-        const doctorId = document.getElementById('doctorId').value;
+        const doctorId = document.getElementById('doctorId').value.trim();
+        const spec = document.getElementById('specialization') ? document.getElementById('specialization').value.trim() : '';
         fileInput = document.getElementById('doctorLicense');
-        if (!doctorId) {
-            showError('Please enter your doctor ID');
-            return;
-        }
-        if (!fileInput || fileInput.files.length === 0) {
-            showError('Please upload your doctor license photo');
-            return;
-        }
+        if (!doctorId) { showError('Please enter your Doctor ID'); return; }
+        if (!fileInput || fileInput.files.length === 0) { showError('Please upload your doctor license photo'); return; }
         extraData.doctor_id = doctorId;
-    } else if (role === 'admin') {
-        const clinicPermitId = document.getElementById('clinicPermitId').value;
-        fileInput = document.getElementById('clinicLicense');
-        if (!clinicPermitId) {
-            showError('Please enter your clinic permit ID');
-            return;
-        }
-        if (!fileInput || fileInput.files.length === 0) {
-            showError('Please upload your clinic license photo');
-            return;
-        }
-        extraData.clinic_permit_id = clinicPermitId;
+        if (spec) extraData.specialization = spec;
+        // Doctors start as pending; admin must approve
+        extraData.verification_status = 'pending';
     }
 
-    if (!role) {
-        showError('Please select a role');
-        return;
-    }
-
-    if (password !== confirmPassword) {
-        showError('Passwords do not match');
-        return;
-    }
-
-    if (password.length < 6) {
-        showError('Password must be at least 6 characters');
-        return;
+    if (role === 'admin') {
+        // Admins are immediately verified
+        extraData.verification_status = 'verified';
     }
 
     registerBtn.disabled = true;
     registerBtn.textContent = 'Registering...';
 
     try {
-        // initial signup and metadata
         const { data, error } = await supabase.auth.signUp({
-            email: email,
-            password: password,
-            options: {
-                data: {
-                    full_name: fullName,
-                    role: role,
-                    ...extraData
-                }
-            }
+            email,
+            password,
+            options: { data: { full_name: fullName, role, ...extraData } }
         });
 
-        if (error) throw error;
-
-        // if we have a file to upload, save it in storage and update the user
-        if (fileInput && fileInput.files.length > 0) {
-            const userId = data.user.id;
-            const file = fileInput.files[0];
-            const ext = file.name.split('.').pop();
-            const path = `${userId}/${role}_license.${ext}`;
-
-            const { error: uploadError } = await supabase.storage.from('licenses').upload(path, file);
-            if (uploadError) throw uploadError;
-
-            const { data: urlData } = supabase.storage.from('licenses').getPublicUrl(path);
-            const licenseUrl = urlData.publicUrl;
-
-            // update user metadata with license URL
-            await supabase.auth.updateUser({ data: { license_url: licenseUrl } });
+        if (error) {
+            console.error('signUp error object:', error);
+            throw error;
         }
 
-        showSuccess('Registration successful! Redirecting to login...');
+        // Upload license file for doctors
+        if (fileInput && fileInput.files.length > 0) {
+            const file = fileInput.files[0];
+            const ext = file.name.split('.').pop();
+            const path = data.user.id + '/' + role + '_license.' + ext;
+            const { error: uploadError } = await supabase.storage.from('licenses').upload(path, file);
+            if (uploadError) {
+                console.warn('License upload failed:', uploadError.message);
+            } else {
+                const { data: urlData } = supabase.storage.from('licenses').getPublicUrl(path);
+                await supabase.auth.updateUser({ data: { license_url: urlData.publicUrl } });
+            }
+        }
 
-        setTimeout(() => {
-            window.location.href = 'login.html';
-        }, 2000);
+        if (role === 'admin') {
+            showSuccess('Admin account created! Redirecting to login...');
+        } else {
+            showSuccess('Registration submitted! Please wait for admin verification before logging in.');
+        }
+
+        setTimeout(() => { window.location.href = 'login.html'; }, 2500);
 
     } catch (error) {
-        showError(error.message || 'Registration failed. Please try again.');
+        // display more information if available
+        console.error('Registration failed:', error);
+        let msg = formatSupabaseError(error);
+        showError(msg);
         registerBtn.disabled = false;
         registerBtn.textContent = 'Register';
     }
@@ -185,6 +227,23 @@ function updateRoleFields() {
     if (doctorFields) doctorFields.style.display = role === 'doctor' ? 'block' : 'none';
     if (adminFields) adminFields.style.display = role === 'admin' ? 'block' : 'none';
 }
+
+// quick check at load time to catch uninitialized database early
+async function sanityCheck() {
+    try {
+        const { data, error } = await supabase.from('profiles').select('id').limit(1);
+        if (error) {
+            console.error('sanity check error:', error);
+            if (error.message && error.message.includes('relation "profiles" does not exist')) {
+                showError('Database not initialized. Please run the SQL setup script in your Supabase project.');
+            }
+        }
+    } catch (e) {
+        console.error('unexpected error during sanity check', e);
+    }
+}
+
+sanityCheck();
 
 const roleSelect = document.getElementById('role');
 if (roleSelect) {

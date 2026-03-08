@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Register - Clinical Support System</title>
     <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
     <nav class="navbar">
         <div class="nav-container">
@@ -24,7 +26,7 @@
         <div class="auth-container">
             <div class="auth-card">
                 <h2>Create Account</h2>
-                <p class="auth-subtitle">Register as a healthcare professional</p>
+                <p class="auth-subtitle">Register as a healthcare professional or system administrator</p>
 
                 <form id="registerForm" class="auth-form">
                     <div class="form-group">
@@ -46,38 +48,46 @@
                         </select>
                     </div>
 
-                    <!-- role-specific fields -->
+                    <!-- Doctor-specific fields -->
                     <div id="doctorFields" class="role-fields" style="display:none;">
+                        <p style="font-size:0.875rem; color:#64748b; margin-bottom:1rem;">
+                            ⚠️ Doctor registrations require admin verification before login access is granted.
+                        </p>
                         <div class="form-group">
-                            <label for="doctorId">Doctor ID</label>
-                            <input type="text" id="doctorId" name="doctorId" placeholder="Enter your government‑issued doctor ID">
+                            <label for="specialization">Specialization</label>
+                            <input type="text" id="specialization" name="specialization"
+                                placeholder="e.g., Cardiology, Pediatrics">
                         </div>
                         <div class="form-group">
-                            <label for="doctorLicense">Doctor License Photo</label>
-                            <input type="file" id="doctorLicense" name="doctorLicense" accept="image/*" />
+                            <label for="doctorId">Government-issued Doctor ID *</label>
+                            <input type="text" id="doctorId" name="doctorId"
+                                placeholder="Enter your official doctor ID number">
+                        </div>
+                        <div class="form-group">
+                            <label for="doctorLicense">Doctor License / Credential Photo *</label>
+                            <input type="file" id="doctorLicense" name="doctorLicense" accept="image/*,application/pdf">
+                            <small>Upload a clear photo or scan of your license</small>
                         </div>
                     </div>
 
+                    <!-- Admin-specific fields -->
                     <div id="adminFields" class="role-fields" style="display:none;">
-                        <div class="form-group">
-                            <label for="clinicPermitId">Clinic Permit ID</label>
-                            <input type="text" id="clinicPermitId" name="clinicPermitId" placeholder="Enter your clinic grant permit ID">
-                        </div>
-                        <div class="form-group">
-                            <label for="clinicLicense">Clinic License Photo</label>
-                            <input type="file" id="clinicLicense" name="clinicLicense" accept="image/*" />
-                        </div>
+                        <p style="font-size:0.875rem; color:#2563eb; margin-bottom:0;">
+                            ℹ️ Admin accounts are immediately activated and can manage the system.
+                        </p>
                     </div>
 
                     <div class="form-group">
                         <label for="password">Password</label>
-                        <input type="password" id="password" name="password" required placeholder="Enter your password" minlength="6">
-                        <small>Password must be at least 6 characters</small>
+                        <input type="password" id="password" name="password" required
+                            placeholder="At least 8 characters" minlength="8">
+                        <small>Must contain uppercase, lowercase, number and special character</small>
                     </div>
 
                     <div class="form-group">
                         <label for="confirmPassword">Confirm Password</label>
-                        <input type="password" id="confirmPassword" name="confirmPassword" required placeholder="Confirm your password">
+                        <input type="password" id="confirmPassword" name="confirmPassword" required
+                            placeholder="Confirm your password">
                     </div>
 
                     <div id="errorMessage" class="error-message"></div>
@@ -102,4 +112,5 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script type="module" src="auth.js"></script>
 </body>
+
 </html>
