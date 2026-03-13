@@ -226,6 +226,7 @@ window.loadDoctorsList = async function () {
 window.verifyDoctor = async function (doctorId) {
     if (!confirm('Approve this doctor?')) return;
     try {
+<<<<<<< HEAD
         // Try RPC first, fall back to direct update
         const { error: rpcErr } = await supabase.rpc('admin_verify_doctor', { doctor_id: doctorId });
         if (rpcErr) {
@@ -234,11 +235,34 @@ window.verifyDoctor = async function (doctorId) {
         }
         await Promise.all([loadPendingDoctors(), loadDoctorsList(), loadAdminStats()]);
     } catch (e) { alert('Error approving doctor: ' + e.message); }
+=======
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('admin_verify_doctor', { p_doctor_id: doctorId });
+        if (rpcErr) {
+            console.error('RPC Error (admin_verify_doctor):', rpcErr);
+            // Try direct update as a fallback (may fail if RLS blocks it)
+            const { data, error } = await supabase.from('profiles').update({ verification_status: 'verified' }).eq('id', doctorId).select('id,verification_status').maybeSingle();
+            if (error) {
+                console.error('Direct Update Error (verifyDoctor):', error);
+                alert('Approve failed: ' + (rpcErr.message || rpcErr.toString()) + '\n' + (error.message || error.toString()));
+                return;
+            }
+        }
+
+        // Refresh UI based on admin RPC results (bypass RLS for reading)
+        await loadPendingDoctors();
+        await loadDoctorsList();
+        alert('Doctor approved successfully.');
+    } catch (e) {
+        console.error('Error approving doctor:', e);
+        alert('Error approving doctor: ' + e.message);
+    }
+>>>>>>> 95215ca (few updates of doctor adding)
 };
 
 window.rejectDoctor = async function (doctorId) {
     if (!confirm('Reject this doctor?')) return;
     try {
+<<<<<<< HEAD
         const { error: rpcErr } = await supabase.rpc('admin_reject_doctor', { doctor_id: doctorId });
         if (rpcErr) {
             const { error } = await supabase.from('profiles').update({ verification_status: 'rejected' }).eq('id', doctorId);
@@ -258,6 +282,52 @@ window.deleteDoctor = async function (doctorId) {
         }
         await Promise.all([loadDoctorsList(), loadAdminStats()]);
     } catch (e) { alert('Error deleting doctor: ' + e.message); }
+=======
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('admin_reject_doctor', { p_doctor_id: doctorId });
+        if (rpcErr) {
+            console.error('RPC Error (admin_reject_doctor):', rpcErr);
+            const { data, error } = await supabase.from('profiles').update({ verification_status: 'rejected' }).eq('id', doctorId).select('id,verification_status').maybeSingle();
+            if (error) {
+                console.error('Direct Update Error (rejectDoctor):', error);
+                alert('Reject failed: ' + (rpcErr.message || rpcErr.toString()) + '\n' + (error.message || error.toString()));
+                return;
+            }
+        }
+
+        // Refresh UI based on admin RPC results (bypass RLS for reading)
+        await loadPendingDoctors();
+        await loadDoctorsList();
+        alert('Doctor rejected successfully.');
+    } catch (e) {
+        console.error('Error rejecting doctor:', e);
+        alert('Error rejecting doctor: ' + e.message);
+    }
+};
+
+window.deleteDoctor = async function (doctorId) {
+    if (!confirm('Delete this doctor?')) return;
+    try {
+        // Prefer RPC that runs with elevated privileges
+        const { error: rpcErr } = await supabase.rpc('admin_delete_doctor', { p_doctor_id: doctorId });
+        if (rpcErr) {
+            console.error('RPC Error (admin_delete_doctor):', rpcErr);
+            // Fallback to direct delete (may be blocked by RLS)
+            const { error } = await supabase.from('profiles').delete().eq('id', doctorId);
+            if (error) {
+                console.error('Direct Delete Error (deleteDoctor):', error);
+                alert('Delete failed: ' + (rpcErr.message || rpcErr.toString()) + '\n' + (error.message || error.toString()));
+                return;
+            }
+        }
+
+        // Refresh the UI; list should update if deletion succeeded
+        await loadDoctorsList();
+        alert('Doctor deleted successfully.');
+    } catch (e) {
+        console.error('Error deleting doctor:', e);
+        alert('Error deleting doctor: ' + e.message);
+    }
+>>>>>>> 95215ca (few updates of doctor adding)
 };
 
 window.viewDoctorDetails = async function (doctorId) {
@@ -268,6 +338,46 @@ window.viewDoctorDetails = async function (doctorId) {
         if (!doctor) { alert('Doctor not found.'); return; }
         const { count: patCount } = await supabase.from('patients').select('*', { count: 'exact', head: true }).eq('created_by', doctorId);
         const { count: visCount } = await supabase.from('patient_visits').select('*', { count: 'exact', head: true }).eq('doctor_id', doctorId);
+<<<<<<< HEAD
+=======
+        let licenseLink = '<p style="color:#94a3b8;margin-top:1rem;">No license uploaded.</p>';
+
+        // If profile contains a stored path or a public URL, generate a short-lived signed URL to view it.
+        const licensePath = doctor.license_url;
+        if (licensePath) {
+            try {
+                // If license_url is already an absolute URL, show it directly.
+                const isAbsolute = /^https?:\/\//i.test(licensePath);
+                if (isAbsolute) {
+                    licenseLink = '<div style="margin-top:1rem;"><a href="' + escHtml(licensePath) + '" target="_blank" class="btn btn-primary">View License</a></div>';
+                } else {
+                    const { data: signedUrl, error: signErr } = await supabase.storage.from('licenses').createSignedUrl(licensePath, 3600);
+                    if (!signErr && signedUrl?.signedUrl) {
+                        licenseLink = '<div style="margin-top:1rem;"><a href="' + signedUrl.signedUrl + '" target="_blank" class="btn btn-primary">View License</a></div>';
+                    } else {
+                        licenseLink = '<p style="color:#ef4444;margin-top:1rem;">License uploaded but cannot generate view link.</p>';
+                    }
+                }
+            } catch (e) {
+                licenseLink = '<p style="color:#ef4444;margin-top:1rem;">License uploaded but cannot generate view link.</p>';
+            }
+        } else {
+            // Try to find an uploaded file in storage under the doctor's folder
+            try {
+                const { data: list, error: listErr } = await supabase.storage.from('licenses').list(doctorId, { limit: 1 });
+                if (!listErr && list && list.length > 0) {
+                    const path = doctorId + '/' + list[0].name;
+                    const { data: signedUrl, error: signErr } = await supabase.storage.from('licenses').createSignedUrl(path, 3600);
+                    if (!signErr && signedUrl?.signedUrl) {
+                        licenseLink = '<div style="margin-top:1rem;"><a href="' + signedUrl.signedUrl + '" target="_blank" class="btn btn-primary">View License</a></div>';
+                    }
+                }
+            } catch (_e) {
+                // ignore; leave default message
+            }
+        }
+
+>>>>>>> 95215ca (few updates of doctor adding)
         document.getElementById('doctorModalContent').innerHTML =
             '<div class="info-row"><span class="info-label">Name</span><span class="info-value">' + escHtml(doctor.full_name) + '</span></div>' +
             '<div class="info-row"><span class="info-label">Email</span><span class="info-value">' + escHtml(doctor.email) + '</span></div>' +
@@ -276,7 +386,11 @@ window.viewDoctorDetails = async function (doctorId) {
             '<div class="info-row"><span class="info-label">Clinic Permit</span><span class="info-value">' + escHtml(doctor.clinic_permit_id || 'N/A') + '</span></div>' +
             '<div class="info-row"><span class="info-label">Patients Added</span><span class="info-value">' + (patCount || 0) + '</span></div>' +
             '<div class="info-row"><span class="info-label">Visits Conducted</span><span class="info-value">' + (visCount || 0) + '</span></div>' +
+<<<<<<< HEAD
             (doctor.license_url ? '<div style="margin-top:1rem;"><a href="' + doctor.license_url + '" target="_blank" class="btn btn-primary">View License</a></div>' : '<p style="color:#94a3b8;margin-top:1rem;">No license uploaded.</p>');
+=======
+            licenseLink;
+>>>>>>> 95215ca (few updates of doctor adding)
         openModal('doctorModal');
     } catch (e) { alert('Error loading doctor details.'); }
 };
@@ -624,6 +738,12 @@ function closeModal(id) {
     if (el) el.style.display = 'none';
 }
 
+<<<<<<< HEAD
+=======
+// expose for inline `onclick` handlers when this file is loaded as a module
+window.closeModal = closeModal;
+
+>>>>>>> 95215ca (few updates of doctor adding)
 // Close modals on outside click
 window.addEventListener('click', function (e) {
     if (e.target.classList.contains('modal')) {
@@ -648,3 +768,4 @@ document.getElementById('logoutBtn').addEventListener('click', async function (e
 
 // Boot
 loadUserProfile();
+
