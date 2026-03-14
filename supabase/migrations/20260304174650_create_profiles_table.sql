@@ -98,8 +98,6 @@ CREATE POLICY "Users can view their own license"
   TO authenticated
   USING (bucket_id = 'licenses' AND auth.uid()::text = (storage.foldername(name))[1]);
 
-<<<<<<< HEAD
-=======
 CREATE POLICY "Admins can view all licenses"
   ON storage.objects FOR SELECT
   TO authenticated
@@ -110,7 +108,6 @@ CREATE POLICY "Admins can view all licenses"
     AND profiles.verification_status = 'verified'
   ));
 
->>>>>>> 95215ca (few updates of doctor adding)
 CREATE POLICY "Admins can read all profiles"
 ON profiles FOR SELECT
 TO authenticated

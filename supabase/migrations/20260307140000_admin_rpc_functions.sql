@@ -11,9 +11,6 @@
 
 -- Function: get all doctor profiles for admin
 CREATE OR REPLACE FUNCTION admin_get_all_doctors()
-<<<<<<< HEAD
-RETURNS SETOF profiles
-=======
 RETURNS TABLE (
   id uuid,
   email text,
@@ -26,7 +23,6 @@ RETURNS TABLE (
   created_at timestamptz,
   updated_at timestamptz
 )
->>>>>>> 95215ca (few updates of doctor adding)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -35,13 +31,6 @@ DECLARE
   caller_role TEXT;
   caller_status TEXT;
 BEGIN
-<<<<<<< HEAD
-  SELECT role, verification_status INTO caller_role, caller_status
-  FROM profiles WHERE id = auth.uid();
-
-  IF caller_role = 'admin' AND caller_status = 'verified' THEN
-    RETURN QUERY SELECT * FROM profiles WHERE role = 'doctor' ORDER BY created_at DESC;
-=======
   SELECT p.role, p.verification_status INTO caller_role, caller_status
   FROM profiles p WHERE p.id = auth.uid();
 
@@ -62,7 +51,6 @@ BEGIN
     LEFT JOIN storage.objects s ON s.bucket_id = 'licenses' AND s.name LIKE p.id || '/%'
     WHERE p.role = 'doctor'
     ORDER BY p.created_at DESC;
->>>>>>> 95215ca (few updates of doctor adding)
   ELSE
     RAISE EXCEPTION 'Access denied: caller is not a verified admin';
   END IF;

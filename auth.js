@@ -192,11 +192,8 @@ async function handleRegister(e) {
             } else {
                 const { data: urlData } = supabase.storage.from('licenses').getPublicUrl(path);
                 await supabase.auth.updateUser({ data: { license_url: urlData.publicUrl } });
-<<<<<<< HEAD
-=======
                 // Also update the profiles table with the path for fresh signed URLs
                 await supabase.from('profiles').update({ license_url: path }).eq('id', data.user.id);
->>>>>>> 95215ca (few updates of doctor adding)
             }
         }
 
