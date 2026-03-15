@@ -385,17 +385,34 @@ document.getElementById('addDoctorForm').addEventListener('submit', async functi
 
 window.loadPatientsList = async function () {
     try {
+        console.log('Loading patients... Role:', currentProfile?.role, 'User ID:', currentUser?.id);
+        
         let query = supabase.from('patients').select('*, profiles(full_name)').order('created_at', { ascending: false });
-        if (currentProfile && currentProfile.role === 'doctor') {
+        
+        if (currentProfile && currentProfile.role === 'doctor' && currentUser && currentUser.id) {
+            console.log('Filtering patients for doctor:', currentUser.id);
             query = query.eq('created_by', currentUser.id);
         }
+        
         const { data, error } = await query;
-        if (error) throw error;
-
-        const el = document.getElementById('patientsList');
-        if (!data || data.length === 0) { el.innerHTML = '<p class="empty-state">No patients found.</p>'; return; }
-
+        
+        if (error) {
+            console.error('Patient query error:', error);
+            throw error;
+        }
+        
+        console.log('Loaded patients:', data ? data.length : 0, 'Total records:', data);
+        
         const isAdmin = currentProfile && currentProfile.role === 'admin';
+        const el = document.getElementById(isAdmin ? 'adminPatientsList' : 'doctorPatientsList');
+        if (!data || data.length === 0) { 
+            if (el) el.innerHTML = '<p class="empty-state">No patients found. Add a new patient to get started.</p>'; 
+            if (!isAdmin) {
+                document.getElementById('myPatientsCount').textContent = '0';
+            }
+            return; 
+        }
+
         el.innerHTML = buildTable(
             ['Name', 'DOB', 'Gender', 'Phone', ...(isAdmin ? ['Added By'] : []), 'Actions'],
             data.map(p => [
@@ -407,7 +424,8 @@ window.loadPatientsList = async function () {
                 '<button onclick="viewPatient(\'' + p.id + '\')" class="btn btn-small btn-primary">History</button> ' +
                 '<button onclick="editPatient(\'' + p.id + '\')" class="btn btn-small btn-secondary">Edit</button> ' +
                 (!isAdmin ? '<button onclick="addVisit(\'' + p.id + '\')" class="btn btn-small btn-success">Add Visit</button> ' +
-                    '<button onclick="prescribeMedication(\'' + p.id + '\')" class="btn btn-small btn-warning">Rx</button> ' : '') +
+                    '<button onclick="prescribeMedication(\'' + p.id + '\')" class="btn btn-small btn-warning">Rx</button> ' +
+                    '<button onclick="openReportModal(\'' + p.id + '\')" class="btn btn-small btn-secondary">Report</button> ' : '') +
                 (isAdmin ? '<button onclick="deletePatient(\'' + p.id + '\')" class="btn btn-small btn-danger">Delete</button>' : '')
             ])
         );
@@ -416,7 +434,11 @@ window.loadPatientsList = async function () {
         if (currentProfile && currentProfile.role === 'doctor') {
             document.getElementById('myPatientsCount').textContent = data.length;
         }
-    } catch (e) { console.error('Patients list error', e); }
+    } catch (e) { 
+        console.error('Patients list error:', e);
+        const el = document.getElementById('patientsList');
+        if (el) el.innerHTML = '<p class="empty-state" style="color:#ef4444;">⚠️ Error loading patients: ' + e.message + '</p>';
+    }
 };
 
 window.openPatientModal = function () { openPatientModal(); };
@@ -424,6 +446,7 @@ window.editPatient = function (id) { openPatientModal(id); };
 window.viewPatient = function (id) { viewPatientHistory(id); };
 window.addVisit = function (id) { openVisitModal(id); };
 window.prescribeMedication = function (id) { openPrescriptionModal(id); };
+window.openReportModal = function (id) { openReportModal(id); };
 
 window.deletePatient = async function (id) {
     if (!confirm('Delete this patient and all their records? This cannot be undone.')) return;
@@ -463,35 +486,61 @@ function openPatientModal(patientId = null) {
 document.getElementById('patientForm').addEventListener('submit', async function (e) {
     e.preventDefault();
     const id = document.getElementById('patientId').value;
+    const fullName = document.getElementById('patientName').value.trim();
+    const dob = document.getElementById('patientDob').value;
+    const gender = document.getElementById('patientGender').value;
+    
+    // Validate required fields
+    if (!fullName) { alert('Patient name is required'); return; }
+    if (!dob) { alert('Date of birth is required'); return; }
+    if (!gender) { alert('Gender is required'); return; }
+    
     const data = {
-        full_name: document.getElementById('patientName').value,
-        date_of_birth: document.getElementById('patientDob').value,
-        gender: document.getElementById('patientGender').value,
-        phone: document.getElementById('patientPhone').value || null,
-        email: document.getElementById('patientEmail').value || null,
-        address: document.getElementById('patientAddress').value || null,
-        emergency_contact_name: document.getElementById('emergencyContactName').value || null,
-        emergency_contact_phone: document.getElementById('emergencyContactPhone').value || null,
-        medical_history: document.getElementById('medicalHistory').value || null,
-        allergies: document.getElementById('allergies').value || null,
-        current_medications: document.getElementById('currentMedications').value || null,
-        blood_group: document.getElementById('patientBloodGroup') ? document.getElementById('patientBloodGroup').value || null : null,
+        full_name: fullName,
+        date_of_birth: dob,
+        gender: gender,
+        phone: document.getElementById('patientPhone').value.trim() || null,
+        email: document.getElementById('patientEmail').value.trim() || null,
+        address: document.getElementById('patientAddress').value.trim() || null,
+        emergency_contact_name: document.getElementById('emergencyContactName').value.trim() || null,
+        emergency_contact_phone: document.getElementById('emergencyContactPhone').value.trim() || null,
+        medical_history: document.getElementById('medicalHistory').value.trim() || null,
+        allergies: document.getElementById('allergies').value.trim() || null,
+        current_medications: document.getElementById('currentMedications').value.trim() || null,
+        blood_group: (document.getElementById('patientBloodGroup').value || '').trim() || null,
     };
+    
     try {
         if (id) {
-            const { error } = await supabase.from('patients').update(data).eq('id', id);
+            // Update existing patient
+            const { error } = await supabase.from('patients').update(data).eq('id', id).select();
             if (error) throw error;
-            alert('Patient updated!');
+            alert('Patient updated successfully!');
         } else {
+            // Insert new patient - MUST include created_by
+            if (!currentUser || !currentUser.id) {
+                alert('Error: User not authenticated. Please log in again.');
+                return;
+            }
             data.created_by = currentUser.id;
-            const { error } = await supabase.from('patients').insert([data]);
-            if (error) throw error;
-            alert('Patient added!');
+            const { error, data: insertedData } = await supabase.from('patients').insert([data]).select();
+            if (error) {
+                console.error('Patient insert error:', error);
+                throw new Error('Failed to add patient: ' + (error.message || error));
+            }
+            if (!insertedData || insertedData.length === 0) {
+                throw new Error('Patient was not created (no response from server)');
+            }
+            alert('Patient added successfully!');
         }
         closeModal('patientModal');
+        document.getElementById('patientForm').reset();
         loadPatientsList();
         if (currentProfile && currentProfile.role === 'admin') loadAdminStats();
-    } catch (err) { alert('Error saving patient: ' + err.message); }
+    } catch (err) {
+        console.error('Patient form error:', err);
+        alert('Error saving patient: ' + (err.message || err.toString()));
+    }
 });
 
 // ─── Visit Management ───────────────────────────────────────────────────────
@@ -502,11 +551,16 @@ function openVisitModal(patientId, visitId = null) {
     document.getElementById('visitForm').reset();
     document.getElementById('visitDate').value = new Date().toISOString().slice(0, 16);
     document.getElementById('visitModalTitle').textContent = visitId ? 'Edit Visit Record' : 'Record Patient Visit';
+    updatePredictionUi();
     openModal('visitModal');
 }
 
 document.getElementById('visitForm').addEventListener('submit', async function (e) {
     e.preventDefault();
+    const symptoms = document.getElementById('visitSymptoms').value.trim();
+    
+    if (!symptoms) { alert('Please enter symptoms'); return; }
+    
     const vitals = {
         temperature: document.getElementById('vitalTemp').value || null,
         blood_pressure: document.getElementById('vitalBP').value || null,
@@ -520,27 +574,32 @@ document.getElementById('visitForm').addEventListener('submit', async function (
         doctor_id: currentUser.id,
         visit_date: document.getElementById('visitDate').value,
         visit_type: document.getElementById('visitType').value,
-        symptoms: document.getElementById('visitSymptoms').value,
-        test_results: document.getElementById('testResults').value || null,
-        diagnosis: document.getElementById('visitDiagnosis').value || null,
-        notes: document.getElementById('visitNotes').value || null,
+        symptoms: symptoms,
+        test_results: document.getElementById('testResults').value.trim() || null,
+        diagnosis: document.getElementById('visitDiagnosis').value.trim() || null,
+        notes: document.getElementById('visitNotes').value.trim() || null,
         vitals: vitals,
     };
     try {
         const visitId = document.getElementById('visitId').value;
         if (visitId) {
-            const { error } = await supabase.from('patient_visits').update(visitData).eq('id', visitId);
+            const { error } = await supabase.from('patient_visits').update(visitData).eq('id', visitId).select();
             if (error) throw error;
             alert('Visit record updated!');
         } else {
-            const { error } = await supabase.from('patient_visits').insert([visitData]);
+            const { error, data: insertedData } = await supabase.from('patient_visits').insert([visitData]).select();
             if (error) throw error;
+            if (!insertedData || insertedData.length === 0) throw new Error('Visit was not created');
             alert('Visit recorded!');
         }
         closeModal('visitModal');
+        document.getElementById('visitForm').reset();
         loadRecentVisits();
         if (currentProfile && currentProfile.role === 'admin') loadAdminStats();
-    } catch (err) { alert('Error saving visit: ' + err.message); }
+    } catch (err) {
+        console.error('Visit form error:', err);
+        alert('Error saving visit: ' + (err.message || err.toString()));
+    }
 });
 
 // Patient History Viewer
@@ -548,6 +607,8 @@ async function viewPatientHistory(patientId) {
     try {
         const { data: patient } = await supabase.from('patients').select('*').eq('id', patientId).single();
         const { data: visits } = await supabase.from('patient_visits').select('*, profiles(full_name)').eq('patient_id', patientId).order('visit_date', { ascending: false });
+        const { data: prescriptions } = await supabase.from('prescriptions').select('*, profiles(full_name)').eq('patient_id', patientId).order('created_at', { ascending: false });
+        const { data: reports } = await supabase.from('reports').select('*, profiles(full_name)').eq('patient_id', patientId).order('created_at', { ascending: false });
 
         let visitsHtml = '<p style="color:#94a3b8;">No visit records found.</p>';
         if (visits && visits.length > 0) {
@@ -589,6 +650,51 @@ async function viewPatientHistory(patientId) {
             '<h4 style="margin:1.5rem 0 1rem;">📋 Visit History (' + (visits ? visits.length : 0) + ' records)</h4>' +
             visitsHtml;
 
+        let prescriptionsHtml = '<p style="color:#94a3b8;">No prescription records found.</p>';
+        if (prescriptions && prescriptions.length > 0) {
+            prescriptionsHtml = prescriptions.map(p => {
+                const doctorName = p.profiles ? escHtml(p.profiles.full_name) : 'Unknown';
+                let medsHtml = '<ul>';
+                try {
+                    const meds = typeof p.medications === 'string' ? JSON.parse(p.medications) : p.medications;
+                    if (Array.isArray(meds)) {
+                        meds.forEach(m => {
+                            medsHtml += `<li><strong>${escHtml(m.name)}</strong>: ${escHtml(m.dosage)}, ${escHtml(m.frequency)} for ${escHtml(m.duration)}</li>`;
+                        });
+                    }
+                } catch(e) {}
+                medsHtml += '</ul>';
+                
+                return '<div class="visit-card">' +
+                    '<div class="visit-card-header">' +
+                    '<strong>' + new Date(p.created_at).toLocaleString() + '</strong>' +
+                    '<span class="visit-type-badge" style="background:#fef3c7;color:#d97706;border-color:#fde68a;">Prescription</span>' +
+                    '</div>' +
+                    '<div class="info-row"><span class="info-label">Doctor</span><span>' + doctorName + '</span></div>' +
+                    medsHtml +
+                    (p.instructions ? '<div class="info-row"><span class="info-label">Instructions</span><span>' + escHtml(p.instructions) + '</span></div>' : '') +
+                    '</div>';
+            }).join('');
+        }
+        content += '<h4 style="margin:1.5rem 0 1rem;">💊 Prescriptions (' + (prescriptions ? prescriptions.length : 0) + ' records)</h4>' + prescriptionsHtml;
+
+        let reportsHtml = '<p style="color:#94a3b8;">No medical reports found.</p>';
+        if (reports && reports.length > 0) {
+            reportsHtml = reports.map(r => {
+                const doctorName = r.profiles ? escHtml(r.profiles.full_name) : 'Unknown';
+                return '<div class="visit-card">' +
+                    '<div class="visit-card-header">' +
+                    '<strong>' + new Date(r.created_at).toLocaleString() + '</strong>' +
+                    '<span class="visit-type-badge" style="background:#e0e7ff;color:#4f46e5;border-color:#c7d2fe;">' + escHtml(r.report_type) + '</span>' +
+                    '</div>' +
+                    '<div class="info-row"><span class="info-label">Doctor</span><span>' + doctorName + '</span></div>' +
+                    '<div class="info-row"><span class="info-label">Title</span><strong>' + escHtml(r.title) + '</strong></div>' +
+                    '<div class="info-row"><span class="info-label">Content</span><span style="white-space:pre-wrap;">' + escHtml(r.content) + '</span></div>' +
+                    '</div>';
+            }).join('');
+        }
+        content += '<h4 style="margin:1.5rem 0 1rem;">📄 Medical Reports (' + (reports ? reports.length : 0) + ' records)</h4>' + reportsHtml;
+
         document.getElementById('visitDetailsContent').innerHTML = content;
         openModal('visitDetailsModal');
     } catch (e) { alert('Error loading patient history.'); console.error(e); }
@@ -597,15 +703,41 @@ async function viewPatientHistory(patientId) {
 // Recent Visits (Doctor view)
 window.loadRecentVisits = async function () {
     try {
+        if (!currentUser || !currentUser.id) {
+            console.warn('No current user for recent visits');
+            return;
+        }
+        
+        console.log('Loading recent visits for doctor:', currentUser.id);
+        
         const { data: visits, error } = await supabase.from('patient_visits')
             .select('*, patients(full_name)')
             .eq('doctor_id', currentUser.id)
             .order('visit_date', { ascending: false })
             .limit(15);
-        if (error) throw error;
+            
+        if (error) {
+            console.error('Recent visits query error:', error);
+            throw error;
+        }
+        
+        console.log('Loaded recent visits:', visits ? visits.length : 0);
+        
         const el = document.getElementById('recentVisits');
-        if (!visits || visits.length === 0) { el.innerHTML = '<p class="empty-state">No visits recorded yet.</p>'; return; }
-        document.getElementById('myVisitsCount').textContent = visits.length;
+        if (!el) return;
+        
+        if (!visits || visits.length === 0) { 
+            el.innerHTML = '<p class="empty-state">No visits recorded yet. Start by adding your first patient visit.</p>'; 
+            if (document.getElementById('myVisitsCount')) {
+                document.getElementById('myVisitsCount').textContent = '0';
+            }
+            return; 
+        }
+        
+        if (document.getElementById('myVisitsCount')) {
+            document.getElementById('myVisitsCount').textContent = visits.length;
+        }
+        
         el.innerHTML = buildTable(
             ['Patient', 'Date', 'Type', 'Symptoms', 'Diagnosis', 'Actions'],
             visits.map(v => [
@@ -617,12 +749,26 @@ window.loadRecentVisits = async function () {
                 '<button onclick="viewPatient(\'' + v.patient_id + '\')" class="btn btn-small btn-primary">History</button>'
             ])
         );
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+        console.error('Recent visits error:', e);
+        const el = document.getElementById('recentVisits');
+        if (el) el.innerHTML = '<p class="empty-state" style="color:#ef4444;">⚠️ Error loading visits: ' + e.message + '</p>';
+    }
 };
 
 // ─── Doctor Dashboard Loader ─────────────────────────────────────────────────
 
 async function loadDoctorDashboard() {
+    // Check if ML service is available and show banner
+    const mlServiceAvailable = await checkPredictionServiceHealth();
+    const mlInfoDiv = document.getElementById('mlServiceInfo');
+    if (mlInfoDiv) {
+        mlInfoDiv.style.display = mlServiceAvailable ? 'none' : 'block';
+    }
+
+    // Update the prediction UI based on doctor specialization
+    updatePredictionUi();
+    
     await Promise.all([loadPatientsList(), loadRecentVisits()]);
 }
 
@@ -676,6 +822,206 @@ document.getElementById('prescriptionForm').addEventListener('submit', async fun
         closeModal('prescriptionModal');
     } catch (err) { alert('Error: ' + err.message); }
 });
+
+// ─── Reports ─────────────────────────────────────────────────────────────────
+
+function openReportModal(patientId) {
+    document.getElementById('reportPatientId').value = patientId;
+    document.getElementById('reportForm').reset();
+    openModal('reportModal');
+}
+
+document.getElementById('reportForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const patientId = document.getElementById('reportPatientId').value;
+    const reportType = document.getElementById('reportType').value;
+    const title = document.getElementById('reportTitle').value.trim();
+    const content = document.getElementById('reportContent').value.trim();
+
+    if (!title || !content) {
+        alert('Please provide both title and content for the report.');
+        return;
+    }
+
+    try {
+        const { error } = await supabase.from('reports').insert([{
+            patient_id: patientId,
+            doctor_id: currentUser.id,
+            report_type: reportType,
+            title: title,
+            content: content
+        }]);
+
+        if (error) throw error;
+        alert('Report generated and saved successfully!');
+        closeModal('reportModal');
+    } catch (err) {
+        alert('Error saving report: ' + err.message);
+    }
+});
+
+// ─── Disease Prediction Engine (ML-based via Python API) ──────────────────
+
+// Configuration for the prediction service
+const PREDICTION_SERVICE_URL = 'http://localhost:5001';
+
+// Check if prediction service is available
+async function checkPredictionServiceHealth() {
+    try {
+        const response = await fetch(`${PREDICTION_SERVICE_URL}/health`);
+        return response.ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+function isCardiologyDoctor() {
+    return !!(currentProfile && currentProfile.specialization && currentProfile.specialization.toLowerCase().includes('cardio'));
+}
+
+function updatePredictionUi() {
+    const btn = document.getElementById('predictHeartDiseaseBtn');
+    const notice = document.getElementById('predictionCardiologyNotice');
+    if (!btn || !notice) return;
+
+    if (isCardiologyDoctor()) {
+        btn.disabled = false;
+        notice.textContent = '🔎 Enter patient symptoms and vitals, then click the button to get a cardiology risk prediction.';
+    } else {
+        btn.disabled = true;
+        notice.textContent = 'Heart disease risk prediction is available only for cardiology specialists. Update your profile specialization to "Cardiology" to enable this feature.';
+    }
+}
+
+function calculateAgeFromDOB(dob) {
+    if (!dob) return null;
+    const date = new Date(dob);
+    if (Number.isNaN(date.getTime())) return null;
+    const now = new Date();
+    let age = now.getFullYear() - date.getFullYear();
+    const m = now.getMonth() - date.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < date.getDate())) {
+        age -= 1;
+    }
+    return age;
+}
+
+function parseNumberFromText(text, regex, defaultValue = null) {
+    if (!text) return defaultValue;
+    const match = text.match(regex);
+    if (!match) return defaultValue;
+    const num = parseFloat(match[1]);
+    return Number.isFinite(num) ? num : defaultValue;
+}
+
+window.predictDiseaseForVisit = async function () {
+    const resultDiv = document.getElementById('predictionResult');
+    if (!resultDiv) return;
+
+    // Only cardiology specialists can use the ML heart disease predictor
+    if (!isCardiologyDoctor()) {
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div style="background:#fffbeb;border-left:4px solid #f97316;padding:1rem;border-radius:4px;color:#92400e;"><strong>ℹ️ Module restricted</strong><br/>Heart disease risk prediction is enabled for cardiology doctors only.</div>';
+        return;
+    }
+
+    const symptoms = document.getElementById('visitSymptoms').value.trim();
+    const testResults = document.getElementById('testResults').value.trim();
+    const diagnosis = document.getElementById('visitDiagnosis').value.trim();
+
+    if (!symptoms) {
+        alert('Please enter symptoms first');
+        return;
+    }
+
+    resultDiv.innerHTML = '<div style="background:#e0e7ff;border-left:4px solid #6366f1;padding:1rem;border-radius:4px;color:#312e81;">⏳ Analyzing symptoms and vitals with ML model...</div>';
+    resultDiv.style.display = 'block';
+
+    try {
+        // Check if service is available
+        const serviceHealthy = await checkPredictionServiceHealth();
+        if (!serviceHealthy) {
+            resultDiv.innerHTML = '<div style="background:#fee2e2;border-left:4px solid #ef4444;padding:1rem;border-radius:4px;color:#7f1d1d;"><strong>⚠️ ML Service Unavailable</strong><br/>Start the Python disease prediction service:<br/><code style="background:#fff;padding:0.25rem;border-radius:2px;">python disease_prediction_service.py</code></div>';
+            return;
+        }
+
+        // Try to gather patient demographics for more accurate prediction
+        const patientId = document.getElementById('visitPatientId').value;
+        let patientData = null;
+        if (patientId) {
+            try {
+                const { data, error } = await supabase.from('patients').select('date_of_birth, gender').eq('id', patientId).single();
+                if (!error) patientData = data;
+            } catch (err) {
+                // ignore - prediction will proceed with defaults
+            }
+        }
+
+        const age = calculateAgeFromDOB(patientData?.date_of_birth) || 55;
+        const gender = (patientData?.gender || '').toLowerCase();
+        const sex = gender === 'female' ? 0 : 1;
+
+        const bpRaw = document.getElementById('vitalBP').value.trim();
+        const trestbps = parseNumberFromText(bpRaw, /([0-9]{2,3})/, 120);
+        const heartRate = parseFloat(document.getElementById('vitalHR').value);
+        const thalach = Number.isFinite(heartRate) ? heartRate : 150;
+
+        const chol = parseNumberFromText(testResults, /(?:chol(?:esterol)?[:=]?\s*)([0-9]{2,3})/i, 200);
+        const glucose = parseNumberFromText(testResults, /(?:fasting\s*blood\s*sugar|fbs|glucose)[:=]?\s*([0-9]{2,3})/i, null);
+        const fbs = glucose !== null ? (glucose > 120 ? 1 : 0) : 0;
+
+        const cp = /chest pain|angina|tightness/i.test(symptoms) ? 1 : 0;
+        const restecg = /ecg|ekg|st[- ]?elevation|t wave/i.test(testResults) ? 1 : 0;
+        const exang = /exertion|exercise|walking|running/i.test(symptoms) ? 1 : 0;
+
+        const payload = {
+            department: 'cardiology',
+            age: age,
+            sex: sex,
+            cp: cp,
+            trestbps: trestbps,
+            chol: chol,
+            fbs: fbs,
+            restecg: restecg,
+            thalach: thalach,
+            exang: exang,
+            oldpeak: 0.0,
+            slope: 2,
+            ca: 0,
+            thal: 2
+        };
+
+        const response = await fetch(`${PREDICTION_SERVICE_URL}/predict_heart_disease`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error('Prediction service error: ' + response.statusText);
+        }
+
+        const result = await response.json();
+        if (!result.success) {
+            throw new Error(result.error || 'Unexpected response from prediction service');
+        }
+
+        const risk = result.risk_percentage;
+        const isHigh = result.has_disease_risk;
+
+        resultDiv.innerHTML = `<div style="background:#f0fdf4;border-left:4px solid ${isHigh ? '#dc2626' : '#22c55e'};padding:1rem;border-radius:4px;color:#166534;">
+            <strong>❤️ Cardiology Risk Prediction</strong>
+            <div style="margin-top:0.5rem;">Estimated heart disease risk: <strong>${risk.toFixed(2)}%</strong></div>
+            <div style="margin-top:0.75rem;">${escHtml(result.recommendation || '')}</div>
+            <div style="margin-top:1rem;padding-top:0.75rem;border-top:1px solid #dcfce7;font-size:0.85rem;"><strong>⚠️ Disclaimer:</strong> ${escHtml(result.disclaimer)}</div>
+        </div>`;
+    } catch (error) {
+        console.error('Prediction error:', error);
+        resultDiv.innerHTML = '<div style="background:#fee2e2;border-left:4px solid #ef4444;padding:1rem;border-radius:4px;color:#7f1d1d;"><strong>❌ Prediction Error</strong><br/>' + escHtml(error.message) + '<br/><br/>Make sure the Python service is running:<br/><code style="background:#fff;padding:0.25rem;border-radius:2px;">python disease_prediction_service.py</code></div>';
+    }
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
