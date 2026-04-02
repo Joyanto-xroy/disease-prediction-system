@@ -865,14 +865,35 @@ document.getElementById('reportForm').addEventListener('submit', async function 
 // Configuration for the prediction service
 const PREDICTION_SERVICE_URL = 'http://localhost:5001';
 
-// Check if prediction service is available
+// Check if prediction service is available with retry
 async function checkPredictionServiceHealth() {
-    try {
-        const response = await fetch(`${PREDICTION_SERVICE_URL}/health`);
-        return response.ok;
-    } catch (e) {
-        return false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+            const response = await fetch(`${PREDICTION_SERVICE_URL}/health`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+            if (response.ok) {
+                return true;
+            }
+        } catch (e) {
+            console.log(`ML Service health check attempt ${attempt} failed:`, e.message);
+        }
+
+        // Wait before retrying
+        if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
     }
+    return false;
 }
 
 function isCardiologyDoctor() {
