@@ -7,7 +7,7 @@ let currentProfile = null;
 
 async function checkAuth() {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session) { window.location.href = 'src/view/login.html'; return null; }
+    if (!session) { window.location.href = '/src/view/login.html'; return null; }
     currentUser = session.user;
     return session;
 }
@@ -1086,7 +1086,7 @@ document.querySelectorAll('.modal-close').forEach(btn => {
 document.getElementById('logoutBtn').addEventListener('click', async function (e) {
     e.preventDefault();
     await supabase.auth.signOut();
-    window.location.href = 'src/view/login.html';
+    window.location.href = '/src/view/login.html';
 });
 
 // Boot
