@@ -118,7 +118,7 @@ async function handleLogin(e) {
         showSuccess('Login successful! Redirecting...');
 
         setTimeout(() => {
-            window.location.href = 'dashboard.html';
+            window.location.href = 'src/view/dashboard.html';
         }, 1000);
 
     } catch (error) {
@@ -203,7 +203,7 @@ async function handleRegister(e) {
             showSuccess('Registration submitted! Please wait for admin verification before logging in.');
         }
 
-        setTimeout(() => { window.location.href = 'login.html'; }, 2500);
+        setTimeout(() => { window.location.href = 'src/view/login.html'; }, 2500);
 
     } catch (error) {
         // display more information if available

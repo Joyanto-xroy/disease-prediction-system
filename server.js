@@ -92,18 +92,27 @@ function checkServiceHealth() {
 // ─── HTTP Server for Web App ────────────────────────────────────────────────
 function startWebServer() {
     const server = http.createServer((req, res) => {
-        let filePath = path.join(__dirname, req.url === '/' ? 'index.html' : req.url);
+        let url = req.url;
+        if (url === '/') url = '/index.html';
+        let ext = path.extname(url);
+        let filePath;
+
+        if (ext === '.html' || ext === '.css' || url === '/index.html') {
+            filePath = path.join(__dirname, 'src', 'view', url);
+        } else {
+            filePath = path.join(__dirname, url);
+        }
+
+        // If no extension, assume HTML and serve from src/view/
+        if (!ext) {
+            filePath = path.join(__dirname, 'src', 'view', url + '.html');
+        }
 
         // Security: prevent directory traversal
         if (!filePath.startsWith(__dirname)) {
             res.writeHead(403, { 'Content-Type': 'text/plain' });
             res.end('Forbidden');
             return;
-        }
-
-        // Default to index.html for routes without extensions
-        if (!path.extname(filePath)) {
-            filePath = path.join(__dirname, 'index.html');
         }
 
         fs.readFile(filePath, 'utf8', (err, data) => {
