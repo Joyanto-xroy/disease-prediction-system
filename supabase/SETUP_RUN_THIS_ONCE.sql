@@ -38,6 +38,7 @@ ALTER TABLE profiles ALTER COLUMN verification_status SET DEFAULT 'pending';
 CREATE TABLE IF NOT EXISTS patients (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   created_by uuid REFERENCES profiles(id) ON DELETE CASCADE,
+  assigned_doctor uuid REFERENCES profiles(id) ON DELETE SET NULL,
   full_name text NOT NULL,
   date_of_birth date NOT NULL,
   gender text CHECK (gender IN ('male', 'female', 'other')),
@@ -86,11 +87,24 @@ CREATE TABLE IF NOT EXISTS prescriptions (
   updated_at timestamptz DEFAULT now()
 );
 
--- 6. ENABLE RLS
+-- 6. CREATE REPORTS TABLE
+CREATE TABLE IF NOT EXISTS reports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id uuid REFERENCES patients(id) ON DELETE CASCADE,
+  doctor_id uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  report_type text NOT NULL DEFAULT 'consultation',
+  title text NOT NULL,
+  content text NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- 7. ENABLE RLS
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE patient_visits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prescriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
 
 -- 7. DROP ALL OLD CONFLICTING POLICIES
 DROP POLICY IF EXISTS "Users can read own profile" ON profiles;
@@ -164,7 +178,29 @@ DROP POLICY IF EXISTS "Authenticated can insert prescriptions" ON prescriptions;
 CREATE POLICY "Authenticated can insert prescriptions"
   ON prescriptions FOR INSERT TO authenticated WITH CHECK (true);
 
+-- reports
+DROP POLICY IF EXISTS "Authenticated can select reports" ON reports;
+CREATE POLICY "Authenticated can select reports"
+  ON reports FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Authenticated can insert reports" ON reports;
+CREATE POLICY "Authenticated can insert reports"
+  ON reports FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Authenticated can update reports" ON reports;
+CREATE POLICY "Authenticated can update reports"
+  ON reports FOR UPDATE TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "Authenticated can delete reports" ON reports;
+CREATE POLICY "Authenticated can delete reports"
+  ON reports FOR DELETE TO authenticated USING (true);
+
+
 -- 9. HANDLE NEW USER TRIGGER (auto-creates profile, admins auto-verified)
+-- DROP TRIGGER FIRST, then function (reverse dependency order)
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP FUNCTION IF EXISTS public.handle_new_user();
+
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 BEGIN
@@ -193,20 +229,41 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
 -- updated_at trigger
+DROP TRIGGER IF EXISTS update_profiles_updated_at ON profiles;
+DROP TRIGGER IF EXISTS update_patients_updated_at ON patients;
+DROP TRIGGER IF EXISTS update_patient_visits_updated_at ON patient_visits;
+DROP TRIGGER IF EXISTS update_prescriptions_updated_at ON prescriptions;
+DROP TRIGGER IF EXISTS update_reports_updated_at ON reports;
+DROP FUNCTION IF EXISTS update_updated_at_column();
+
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS update_profiles_updated_at ON profiles;
 CREATE TRIGGER update_profiles_updated_at
   BEFORE UPDATE ON profiles FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_patients_updated_at
+  BEFORE UPDATE ON patients FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_patient_visits_updated_at
+  BEFORE UPDATE ON patient_visits FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_prescriptions_updated_at
+  BEFORE UPDATE ON prescriptions FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_reports_updated_at
+  BEFORE UPDATE ON reports FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- 10. FIX EXISTING ADMINS STUCK ON PENDING
@@ -214,6 +271,14 @@ UPDATE public.profiles SET verification_status = 'verified'
 WHERE role = 'admin' AND verification_status != 'verified';
 
 -- 11. CREATE ADMIN RPC FUNCTIONS (SECURITY DEFINER - bypass RLS for admin ops)
+-- DROP existing functions first to avoid return type conflicts
+DROP FUNCTION IF EXISTS admin_get_all_doctors();
+DROP FUNCTION IF EXISTS admin_get_pending_doctors();
+DROP FUNCTION IF EXISTS admin_verify_doctor(UUID);
+DROP FUNCTION IF EXISTS admin_reject_doctor(UUID);
+DROP FUNCTION IF EXISTS admin_delete_doctor(UUID);
+DROP FUNCTION IF EXISTS admin_get_stats();
+
 CREATE OR REPLACE FUNCTION admin_get_all_doctors()
 RETURNS SETOF profiles LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE caller_role TEXT; caller_status TEXT;
