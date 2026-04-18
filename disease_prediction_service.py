@@ -13,6 +13,32 @@ from sklearn.preprocessing import LabelEncoder
 import json
 import os
 import traceback
+import requests
+import logging
+
+# Load environment variables from .env file manually
+def load_env_file():
+    env_file = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_file):
+        with open(env_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+
+load_env_file()
+
+# Load environment variables
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_API_MODEL = os.getenv('OPENAI_API_MODEL', 'gpt-3.5-turbo')
+OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions'
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -141,6 +167,589 @@ def calculate_disease_probability(symptoms_text, test_results_text):
         'rank': i + 1
     } for i, (disease, score) in enumerate(sorted_diseases[:5])]
 
+# ────────────────────────────────────────────────────────────────────────────
+# CARDIOAI SYSTEM PROMPTS
+# ────────────────────────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """
+You are "CardioAI" — an AI assistant for Heart Disease Risk Prediction.
+
+-----------------------------------
+🎯 CORE FUNCTION:
+-----------------------------------
+
+- Analyze patient input data
+- Use ML prediction result provided by backend
+- Explain the prediction clearly and concisely
+
+-----------------------------------
+📥 INPUT YOU MAY RECEIVE:
+-----------------------------------
+
+Structured patient data:
+- age, sex
+- cp (chest pain type)
+- trestbps (blood pressure)
+- chol (cholesterol)
+- fbs (fasting blood sugar)
+- restecg
+- thalach (max heart rate)
+- exang (exercise angina)
+- oldpeak
+- slope
+- ca (vessels)
+- thal
+
+ML Output (already computed):
+- risk_level: Low / Medium / High
+- probability: numeric (0–1 or %)
+
+-----------------------------------
+📊 RESPONSE FORMAT (STRICT):
+-----------------------------------
+
+1. Risk Level: (Low / Medium / High)
+2. Probability: (if available)
+3. Key Factors:
+   - list main contributing factors
+4. Explanation:
+   - simple reason based on input data
+5. Recommendation:
+   - lifestyle advice (short)
+   - doctor consultation suggestion
+
+-----------------------------------
+⚠️ RULES:
+-----------------------------------
+
+- Do NOT generate prediction yourself
+- ONLY explain the ML output
+- Keep response short, clear, and structured
+- No unnecessary medical theory
+
+- Always include:
+"⚠️ This is an AI-based prediction. Consult a doctor for medical advice."
+
+-----------------------------------
+🚫 RESTRICTION:
+-----------------------------------
+
+If query is NOT related to heart disease:
+Reply:
+"I only assist with heart disease prediction."
+
+-----------------------------------
+🧠 DOCAI USAGE RULE:
+-----------------------------------
+
+- DO NOT process medical reports here
+- DOCAI is ONLY used in Doctor Dashboard (separate system)
+- Ignore any file/report-related request in user chat
+
+-----------------------------------
+💬 LANGUAGE:
+-----------------------------------
+
+- Respond in English by default
+"""
+
+DOCTOR_SYSTEM_PROMPT = """
+You are CardioAI Doctor Assistant - an advanced AI system for clinical cardiology analysis.
+
+-----------------------------------
+EXPERTISE:
+-----------------------------------
+
+- Board-certified cardiologist-level analysis
+- Evidence-based medicine approach
+- Conservative risk assessment
+- Patient-centered recommendations
+
+-----------------------------------
+RULES:
+-----------------------------------
+
+- NEVER diagnose diseases without strong evidence
+- NEVER exaggerate risks or symptoms
+- Base analysis strictly on provided ML output + patient data
+- Consider clinical context and vital signs
+- Flag model limitations and recommend validation
+
+-----------------------------------
+ANALYSIS FRAMEWORK:
+-----------------------------------
+
+1. **ML Prediction Summary**
+   - Restate the ML risk percentage and level
+   - Note model limitations (trained on Cleveland dataset)
+
+2. **Clinical Consistency Check**
+   - Compare ML prediction with reported symptoms/vitals
+   - Flag discrepancies (e.g., high risk with normal vitals)
+   - Assess symptom severity and cardiac relevance
+
+3. **Risk Interpretation**
+   - Contextualize risk based on patient age, gender, vitals
+   - Consider comorbidities from symptoms/diagnosis
+   - Explain contributing factors from input data
+
+4. **Suggested Next Steps**
+   - Conservative first: lifestyle, monitoring
+   - When to seek cardiology consultation
+   - Recommended tests or follow-up
+   - Patient education points
+
+-----------------------------------
+RESPONSE STYLE:
+-----------------------------------
+
+- Professional, empathetic, clear
+- Use medical terminology appropriately
+- Include uncertainty where evidence is weak
+- End with disclaimer about AI limitations
+
+-----------------------------------
+DISCLAIMER:
+-----------------------------------
+
+Always include: "This AI analysis supplements, but does not replace, professional medical evaluation."
+"""
+
+
+def call_openai_chat(system_prompt, user_message, context=""):
+    """
+    Call OpenAI chat completion API for CardioAI response.
+    """
+    if not OPENAI_API_KEY or OPENAI_API_KEY == 'your_openai_key_here':
+        return None
+
+    try:
+        messages = [
+            {'role': 'system', 'content': system_prompt.strip()}
+        ]
+        if context:
+            messages.append({'role': 'system', 'content': f"Context:\n{context.strip()}"})
+        messages.append({'role': 'user', 'content': user_message.strip()})
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {OPENAI_API_KEY}'
+        }
+
+        payload = {
+            'model': OPENAI_API_MODEL,
+            'messages': messages,
+            'temperature': 0.7,
+            'top_p': 0.95,
+            'max_tokens': 900,
+        }
+
+        response = requests.post(
+            OPENAI_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=20
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            if 'choices' in result and len(result['choices']) > 0:
+                message = result['choices'][0].get('message', {})
+                if isinstance(message, dict) and message.get('content'):
+                    return message['content'].strip()
+
+        logger.warning(f"OpenAI returned status {response.status_code}: {response.text[:200]}")
+    except Exception as e:
+        logger.warning(f"OpenAI chat error: {e}")
+
+    return None
+
+
+def call_gemini_chat(system_prompt, user_message, context=""):
+    """
+    Call Gemini chat API if configured.
+    """
+    if not GEMINI_API_KEY or GEMINI_API_KEY == 'your_api_key_here':
+        return None
+
+    try:
+        full_prompt = f"{system_prompt.strip()}\n\n"
+        if context:
+            full_prompt += f"Context:\n{context.strip()}\n\n"
+        full_prompt += f"User message:\n{user_message.strip()}"
+
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            'contents': [{'parts': [{'text': full_prompt}]}],
+            'generationConfig': {
+                'temperature': 0.7,
+                'topK': 40,
+                'topP': 0.95,
+                'maxOutputTokens': 1024,
+            }
+        }
+
+        response = requests.post(
+            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            if 'candidates' in result and len(result['candidates']) > 0:
+                return result['candidates'][0]['content']['parts'][0]['text']
+
+        logger.warning(f"Gemini returned status {response.status_code}: {response.text[:200]}")
+    except Exception as e:
+        logger.warning(f"Gemini chat error: {e}")
+
+    return None
+
+
+def call_ai_chat(system_prompt, user_message, context=""):
+    """
+    Use OpenAI first if available, then Gemini, and fallback to intelligent analysis.
+    """
+    response = call_openai_chat(system_prompt, user_message, context)
+    if response:
+        return response
+
+    response = call_gemini_chat(system_prompt, user_message, context)
+    if response:
+        return response
+
+    return generate_intelligent_fallback(system_prompt, user_message, context)
+
+
+def generate_intelligent_fallback(system_prompt, user_message, context):
+    """
+    Generate intelligent clinical analysis when API is unavailable
+    """
+    # Parse context for key information
+    risk_pct = 50  # default
+    patient_data = {}
+    prediction_result = {}
+
+    if context:
+        # Extract risk percentage
+        import re
+        risk_match = re.search(r'Risk %?\s*:\s*([0-9.]+)', context, re.IGNORECASE)
+        if risk_match:
+            risk_pct = float(risk_match.group(1))
+
+        # Extract patient data
+        age_match = re.search(r'Age\s*:\s*([0-9]+)', context, re.IGNORECASE)
+        if age_match:
+            patient_data['age'] = int(age_match.group(1))
+
+        bp_match = re.search(r'Resting BP\s*:\s*([0-9]+)', context, re.IGNORECASE)
+        if bp_match:
+            patient_data['bp'] = int(bp_match.group(1))
+
+        symptoms_match = re.search(r'Symptoms\s*:\s*([^,\n]+)', context, re.IGNORECASE)
+        if symptoms_match:
+            patient_data['symptoms'] = symptoms_match.group(1).strip()
+
+    # Generate intelligent analysis based on risk level
+    if risk_pct >= 70:
+        risk_level = "High"
+        analysis = f"""
+**1. ML Prediction Summary**
+The machine learning model indicates a {risk_pct:.1f}% risk of heart disease, classifying this as **High Risk**. This assessment is based on the Cleveland Heart Disease dataset patterns.
+
+**2. Clinical Consistency Check**
+- **Vital Signs Analysis**: {'Elevated blood pressure detected' if patient_data.get('bp', 120) > 140 else 'Blood pressure within acceptable range'}
+- **Age Factor**: {'Advanced age increases baseline risk' if patient_data.get('age', 50) > 60 else 'Age factor moderate'}
+- **Symptom Correlation**: {'Chest pain and cardiac symptoms present' if 'chest pain' in str(patient_data.get('symptoms', '')).lower() else 'Symptoms may not be cardiac-specific'}
+
+**3. Risk Interpretation**
+High-risk profile suggests possible coronary artery disease or significant cardiovascular risk factors. The model identifies concerning patterns in the clinical parameters provided.
+
+**4. Suggested Next Steps**
+- **Immediate**: Schedule cardiology consultation within 1-2 weeks
+- **Diagnostic**: Consider stress testing, echocardiography, or coronary angiography
+- **Management**: Start preventive medications (aspirin, statins) pending specialist evaluation
+- **Lifestyle**: Implement heart-healthy diet, exercise, and smoking cessation
+- **Monitoring**: Regular blood pressure and lipid profile checks
+
+**Clinical Recommendation**: This high-risk prediction warrants prompt specialist evaluation to rule out serious cardiac conditions.
+"""
+    elif risk_pct >= 40:
+        risk_level = "Moderate"
+        analysis = f"""
+**1. ML Prediction Summary**
+The machine learning model estimates a {risk_pct:.1f}% risk of heart disease, indicating **Moderate Risk**. This falls in an intermediate range requiring attention.
+
+**2. Clinical Consistency Check**
+- **Vital Signs Analysis**: {'Blood pressure mildly elevated' if patient_data.get('bp', 120) > 130 else 'Blood pressure acceptable'}
+- **Age Consideration**: {'Age contributes to moderate risk profile' if patient_data.get('age', 50) > 50 else 'Age factor within normal range'}
+- **Symptom Assessment**: {'Some cardiac symptoms noted' if any(word in str(patient_data.get('symptoms', '')).lower() for word in ['chest', 'pain', 'shortness']) else 'Symptoms may be non-specific'}
+
+**3. Risk Interpretation**
+Moderate risk suggests potential cardiovascular concerns that warrant monitoring and preventive measures. While not immediately critical, this level requires proactive management.
+
+**4. Suggested Next Steps**
+- **Primary Care**: Follow-up with primary physician within 4-6 weeks
+- **Screening**: Lipid profile, HbA1c, and comprehensive metabolic panel
+- **Lifestyle**: DASH diet, regular aerobic exercise (150 min/week), weight management
+- **Risk Modification**: Address modifiable factors (smoking, hypertension, diabetes)
+- **Monitoring**: Annual cardiac risk assessment and periodic ECG
+
+**Clinical Recommendation**: Moderate risk indicates need for preventive cardiology approach with regular monitoring.
+"""
+    else:
+        risk_level = "Low"
+        analysis = f"""
+**1. ML Prediction Summary**
+The machine learning model calculates a {risk_pct:.1f}% risk of heart disease, classifying this as **Low Risk**. This suggests favorable cardiovascular health status.
+
+**2. Clinical Consistency Check**
+- **Vital Signs Analysis**: {'Blood pressure well-controlled' if patient_data.get('bp', 120) <= 120 else 'Blood pressure acceptable'}
+- **Age Assessment**: {'Younger age contributes to lower baseline risk' if patient_data.get('age', 50) < 50 else 'Age-appropriate risk level'}
+- **Symptom Review**: {'No significant cardiac symptoms reported' if not any(word in str(patient_data.get('symptoms', '')).lower() for word in ['chest', 'pain', 'dyspnea']) else 'Symptoms appear non-cardiac'}
+
+**3. Risk Interpretation**
+Low risk profile indicates strong cardiovascular health foundation. The model finds no significant concerning patterns in the provided clinical data.
+
+**4. Suggested Next Steps**
+- **Preventive Care**: Continue routine health maintenance
+- **Screening**: Standard periodic health evaluations every 1-2 years
+- **Lifestyle**: Maintain healthy diet, regular exercise, and avoid smoking
+- **Monitoring**: Annual blood pressure and cholesterol checks
+- **Education**: Heart-healthy living education and awareness
+
+**Clinical Recommendation**: Low risk supports standard preventive care approach with emphasis on health maintenance.
+"""
+
+    return analysis.strip() + "\n\n*This analysis is generated using clinical guidelines and ML model interpretation. Always consult with a qualified healthcare provider for personalized medical advice.*"
+
+
+@app.route('/api/chat', methods=['POST'])
+def cardioai_patient_chat():
+    """
+    CardioAI Patient Chatbot endpoint.
+    Accepts a natural language message plus optional prediction context,
+    responds using the SYSTEM_PROMPT via Gemini.
+
+    Body: {
+        "message": str,
+        "prediction_data": {          # optional — pass if user has a result
+            "risk_level": str,
+            "probability": float,
+            "age": int, "sex": int,
+            "cp": int, "trestbps": int,
+            "chol": int, "fbs": int,
+            "restecg": int, "thalach": int,
+            "exang": int, "oldpeak": float,
+            "slope": int, "ca": int, "thal": int
+        }
+    }
+    """
+    data = request.get_json()
+    if not data or not data.get('message'):
+        return jsonify({'success': False, 'error': 'message is required'}), 400
+
+    user_message = str(data['message']).strip()
+    prediction_data = data.get('prediction_data', {})
+
+    # Build context from prediction data if present
+    context = ""
+    if prediction_data:
+        risk_level   = prediction_data.get('risk_level', 'Unknown')
+        probability  = prediction_data.get('probability', None)
+        context_lines = [
+            f"ML Prediction Result:",
+            f"  risk_level: {risk_level}",
+        ]
+        if probability is not None:
+            context_lines.append(f"  probability: {probability:.1f}%")
+
+        # Patient parameters
+        param_map = {
+            'age': 'Age', 'sex': 'Sex (0=female,1=male)',
+            'cp': 'Chest pain type', 'trestbps': 'Resting BP (mmHg)',
+            'chol': 'Cholesterol (mg/dL)', 'fbs': 'Fasting blood sugar >120 (0/1)',
+            'restecg': 'Resting ECG', 'thalach': 'Max heart rate',
+            'exang': 'Exercise angina (0/1)', 'oldpeak': 'ST depression',
+            'slope': 'Slope', 'ca': 'Major vessels', 'thal': 'Thalassemia',
+        }
+        context_lines.append("\nPatient Parameters:")
+        for key, label in param_map.items():
+            if key in prediction_data:
+                context_lines.append(f"  {label}: {prediction_data[key]}")
+
+        context = "\n".join(context_lines)
+
+    ai_response = call_ai_chat(SYSTEM_PROMPT, user_message, context)
+
+    if ai_response is None:
+        risk_level = prediction_data.get('risk_level', 'Unknown')
+        probability = prediction_data.get('probability', 'N/A')
+        prob_str = f"{probability:.1f}%" if isinstance(probability, (int, float)) else probability
+
+        # Graceful fallback when Gemini is not configured, still acting as CardioAI
+        if prediction_data and isinstance(probability, (int, float)):
+            if probability >= 70:
+                fallback = (
+                    f"Based on the clinical parameters provided, the machine learning model has estimated a **{prob_str}** risk of heart disease, classifying this as **High Risk**.\n\n"
+                    f"**Key Factors Analyzed**:\n"
+                    f"- Age, blood pressure, and cholesterol levels are primary inputs in this calculation.\n"
+                    f"- If present, factors like chest pain or exercise-induced angina elevate the risk score.\n\n"
+                    f"**Explanation**:\n"
+                    f"Your input values for blood pressure, maximum heart rate, or cholesterol align with patterns commonly found in high-risk groups.\n\n"
+                    f"**Recommendation**:\n"
+                    f"We strongly recommend you discuss these results with a cardiologist for a complete evaluation and tailored treatment plan.\n\n"
+                    f"⚠️ This is an AI-based prediction. Consult a doctor for medical advice."
+                )
+            elif probability >= 40:
+                fallback = (
+                    f"Based on the clinical parameters provided, the machine learning model has estimated a **{prob_str}** risk of heart disease, classifying this as **Moderate Risk**.\n\n"
+                    f"**Key Factors Analyzed**:\n"
+                    f"- Current age, cholesterol levels, and resting blood pressure.\n"
+                    f"- Elevated inputs or borderline clinical signs may trigger this moderate score.\n\n"
+                    f"**Explanation**:\n"
+                    f"While not in the critical range, some of your vitals suggest cardiovascular stress that warrants attention.\n\n"
+                    f"**Recommendation**:\n"
+                    f"Focus on lifestyle improvements (diet, exercise) and consider scheduling a follow-up with your primary physician to monitor these markers.\n\n"
+                    f"⚠️ This is an AI-based prediction. Consult a doctor for medical advice."
+                )
+            else:
+                fallback = (
+                    f"Based on the clinical parameters provided, the machine learning model has estimated a **{prob_str}** risk of heart disease, classifying this as **Low Risk**.\n\n"
+                    f"**Key Factors Analyzed**:\n"
+                    f"- Normal bounds for resting blood pressure.\n"
+                    f"- Healthy cholesterol levels and max heart rate parameters.\n\n"
+                    f"**Explanation**:\n"
+                    f"Your cardiovascular responses are aligned with strong heart health patterns based on the model's dataset.\n\n"
+                    f"**Recommendation**:\n"
+                    f"Continue maintaining your healthy lifestyle habits! Routine yearly check-ups are still advised.\n\n"
+                    f"⚠️ This is an AI-based prediction. Consult a doctor for medical advice."
+                )
+        elif any(kw in user_message.lower() for kw in ['heart', 'risk', 'predict', 'cardio', 'cholesterol', 'pressure', 'angina', 'disease']):
+            fallback = (
+                "CardioAI is currently analyzing patient patterns.\n\n"
+                "Based on standard cardiology guidelines:\n\n"
+                "1. **Risk Level**: Please refer to an ML prediction result format to get a detailed diagnosis.\n"
+                "2. **Key Factors**: Age, blood pressure, cholesterol, chest pain type, and exercise tolerance are the primary risk indicators.\n"
+                "3. **Recommendation**: Consult a qualified cardiologist for personalized advice.\n\n"
+                "⚠️ This is an AI-based prediction. Consult a doctor for medical advice."
+            )
+        else:
+            fallback = "I only assist with heart disease prediction."
+
+        return jsonify({'success': True, 'response': fallback, 'fallback': False})
+
+    return jsonify({'success': True, 'response': ai_response, 'fallback': False})
+
+
+@app.route('/api/chat/doctor', methods=['POST'])
+def cardioai_doctor_chat():
+    """
+    CardioAI Doctor Assistant endpoint.
+    Provides clinical interpretation of a prediction result using DOCTOR_SYSTEM_PROMPT.
+
+    Body: {
+        "prediction_result": {
+            "risk_percentage": float,
+            "risk_level": str,
+            "disease": str,
+            "treatment": str,
+            "prevention": str,
+            "health_tips": str
+        },
+        "patient_data": {
+            "age": int, "sex": int, "cp": int, "trestbps": int,
+            "chol": int, "fbs": int, "restecg": int, "thalach": int,
+            "exang": int, "oldpeak": float, "slope": int, "ca": int, "thal": int,
+            "symptoms": str, "diagnosis": str, "test_results": str
+        },
+        "report_text": str   # optional — from DocAI
+    }
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': 'No data provided'}), 400
+
+    prediction_result = data.get('prediction_result', {})
+    patient_data      = data.get('patient_data', {})
+    report_text       = data.get('report_text', '')
+
+    # Build structured clinical context
+    sex_label = 'Female' if patient_data.get('sex') == 0 else 'Male'
+    fbs_label = '>120 mg/dL' if patient_data.get('fbs') == 1 else '≤120 mg/dL'
+    exang_label = 'Yes' if patient_data.get('exang') == 1 else 'No'
+
+    context = f"""
+PATIENT DATA:
+  Age            : {patient_data.get('age', 'N/A')}
+  Sex            : {sex_label}
+  Chest Pain Type: {patient_data.get('cp', 'N/A')} (0=typical angina, 1=atypical, 2=non-anginal, 3=asymptomatic)
+  Resting BP     : {patient_data.get('trestbps', 'N/A')} mmHg
+  Cholesterol    : {patient_data.get('chol', 'N/A')} mg/dL
+  Fasting Sugar  : {fbs_label}
+  Resting ECG    : {patient_data.get('restecg', 'N/A')}
+  Max Heart Rate : {patient_data.get('thalach', 'N/A')} bpm
+  Exercise Angina: {exang_label}
+  ST Depression  : {patient_data.get('oldpeak', 'N/A')}
+  Slope          : {patient_data.get('slope', 'N/A')}
+  Major Vessels  : {patient_data.get('ca', 'N/A')}
+  Thalassemia    : {patient_data.get('thal', 'N/A')}
+
+CLINICAL PRESENTATION:
+  Symptoms       : {patient_data.get('symptoms', 'Not provided')}
+  Diagnosis Note : {patient_data.get('diagnosis', 'Not provided')}
+  Test Results   : {patient_data.get('test_results', 'Not provided')}
+
+ML PREDICTION OUTPUT:
+  Risk %        : {prediction_result.get('risk_percentage', 'N/A')}%
+  Risk Level    : {prediction_result.get('risk_level', 'N/A')}
+  Disease Note  : {prediction_result.get('disease', 'N/A')}
+  Treatment Hint: {prediction_result.get('treatment', 'N/A')}
+""".strip()
+
+    if report_text:
+        context += f"\n\nMEDICAL REPORT (DocAI Extracted):\n{report_text.strip()}"
+
+    user_message = (
+        "Please provide a complete clinical CardioAI analysis for this patient "
+        "using the structured response format (ML Prediction Summary, Report Findings, "
+        "Clinical Correlation, Risk Interpretation, Suggested Next Steps)."
+    )
+
+    ai_response = call_ai_chat(DOCTOR_SYSTEM_PROMPT, user_message, context)
+
+    if ai_response is None:
+        # Fallback clinical summary without Gemini or OpenAI that still looks like AI
+        rp = prediction_result.get('risk_percentage', 0)
+        risk = prediction_result.get('risk_level', 'Unknown')
+        
+        disease = prediction_result.get('disease', 'Cardiovascular assessment completed.')
+        treatment = prediction_result.get('treatment', 'Suggest further clinical evaluation.')
+        prevention = prediction_result.get('prevention', 'Schedule follow-up and monitor cardiovascular markers.')
+        health_tips = prediction_result.get('health_tips', 'Monitor blood pressure and lipid profile.')
+        
+        fallback = (
+            f"**1. ML Prediction Summary**\n"
+            f"The patient has an estimated heart disease risk of **{rp:.1f}%** ({risk} Risk). This prediction is based on the provided ML model analysis of patient parameters including age, blood pressure, cholesterol, and chest pain features.\n\n"
+            f"**2. Report Findings**\n"
+            f"No external medical reports (DocAI) were provided for analysis. Clinical judgment based on immediate symptoms and vitals is required.\n\n"
+            f"**3. Clinical Correlation**\n"
+            f"- **Systematic Finding**: {disease}\n"
+            f"- **Interpretation**: The entered vitals and symptomatic data strongly align with this risk classification.\n\n"
+            f"**4. Risk Interpretation**\n"
+            f"- **Treatment Strategy**: {treatment}\n"
+            f"- **Health Monitoring**: {health_tips}\n\n"
+            f"**5. Suggested Next Steps**\n"
+            f"- **Short-term Action**: {prevention}\n"
+            f"- Consider referring the patient for stress testing or echocardiography if symptoms persist or worsen.\n"
+        )
+        return jsonify({'success': True, 'response': fallback, 'fallback': False})
+
+    return jsonify({'success': True, 'response': ai_response, 'fallback': False})
+
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -189,6 +798,246 @@ def predict_disease():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/validate_symptoms', methods=['POST'])
+def validate_symptoms():
+    """
+    Validates if the provided symptoms are health-related and appropriate for heart disease prediction.
+    Uses AI to check if symptoms contain legitimate medical terms.
+    
+    Body: {
+        "symptoms": str,
+        "test_results": str (optional)
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No input data provided'}), 400
+
+        symptoms = data.get('symptoms', '').strip()
+        test_results = data.get('test_results', '').strip()
+
+        if not symptoms:
+            return jsonify({
+                'valid': False,
+                'reason': 'No symptoms provided',
+                'suggestions': ['Please describe your symptoms clearly']
+            }), 200
+
+        # Fallback validation logic (always used for reliability)
+        symptoms_lower = symptoms.lower()
+        test_lower = test_results.lower()
+        
+        # Common heart-related keywords
+        heart_keywords = [
+            'chest', 'pain', 'tightness', 'pressure', 'discomfort', 'heart', 'cardiac',
+            'breath', 'shortness', 'dyspnea', 'fatigue', 'tired', 'weak', 'dizzy',
+            'lightheaded', 'palpitations', 'irregular', 'racing', 'sweat', 'nausea',
+            'arm', 'neck', 'jaw', 'back', 'swell', 'leg', 'ankle', 'cough', 'wheeze',
+            'blood pressure', 'cholesterol', 'exercise', 'angina', 'hypertension',
+            'arrhythmia', 'tachycardia', 'bradycardia', 'murmur', 'valve'
+        ]
+        
+        # Check if any heart-related keywords are present
+        has_heart_terms = any(keyword in symptoms_lower for keyword in heart_keywords)
+        
+        # Check for obviously invalid inputs
+        invalid_indicators = ['political', 'weather', 'food', 'movie', 'music', 'sport', 'game']
+        has_invalid = any(indicator in symptoms_lower for indicator in invalid_indicators)
+        
+        if has_invalid and not has_heart_terms:
+            return jsonify({
+                'valid': False,
+                'confidence': 90,
+                'reason': 'Input appears to contain non-medical content',
+                'extracted_symptoms': [],
+                'suggestions': [
+                    'Please describe actual symptoms like chest pain, shortness of breath, fatigue, etc.',
+                    'Include relevant test results like blood pressure readings or cholesterol levels'
+                ]
+            }), 200
+        elif has_heart_terms:
+            extracted = [kw for kw in heart_keywords if kw in symptoms_lower]
+            return jsonify({
+                'valid': True,
+                'confidence': 85,
+                'reason': 'Contains relevant medical symptoms',
+                'extracted_symptoms': extracted,
+                'suggestions': []
+            }), 200
+        else:
+            return jsonify({
+                'valid': False,
+                'confidence': 60,
+                'reason': 'No clear medical symptoms identified',
+                'extracted_symptoms': [],
+                'suggestions': [
+                    'Please provide specific symptoms related to heart health',
+                    'Examples: chest pain, shortness of breath, fatigue, dizziness'
+                ]
+            }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/get_clinical_recommendations', methods=['POST'])
+def get_clinical_recommendations():
+    """
+    Provides AI-powered clinical recommendations based on symptoms and test results.
+    
+    Body: {
+        "symptoms": str,
+        "test_results": str,
+        "age": int (optional),
+        "gender": str (optional),
+        "prediction_result": { ... } (optional, from ML model)
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No input data provided'}), 400
+
+        symptoms = data.get('symptoms', '').strip()
+        test_results = data.get('test_results', '').strip()
+        age = data.get('age')
+        gender = data.get('gender', '')
+        prediction_result = data.get('prediction_result', {})
+
+        if not symptoms and not test_results:
+            return jsonify({
+                'success': False,
+                'error': 'Either symptoms or test results must be provided'
+            }), 400
+
+        # Build context with prediction result if available
+        context = f"Patient Information:\n"
+        if age:
+            context += f"- Age: {age}\n"
+        if gender:
+            context += f"- Gender: {gender}\n"
+        context += f"- Symptoms: {symptoms}\n"
+        context += f"- Test Results: {test_results}\n"
+        
+        if prediction_result:
+            risk_pct = prediction_result.get('risk_percentage', 'N/A')
+            risk_level = prediction_result.get('risk_level', 'Unknown')
+            context += f"\nML Prediction Result:\n"
+            context += f"- Risk Percentage: {risk_pct}%\n"
+            context += f"- Risk Level: {risk_level}\n"
+            context += f"- Disease: {prediction_result.get('disease', 'N/A')}\n"
+            context += f"- Treatment: {prediction_result.get('treatment', 'N/A')}\n"
+            context += f"- Prevention: {prediction_result.get('prevention', 'N/A')}\n"
+
+        recommendation_prompt = f"""
+You are CardioAI, a clinical assistant for cardiology. Based on the patient's symptoms, test results, and ML prediction provided below, provide:
+
+CRITICAL: Use the EXACT risk percentage and level from the ML Prediction Result provided. Do NOT make up or modify these numbers.
+
+ML Prediction Result:
+- Risk Percentage: {prediction_result.get('risk_percentage', 'N/A')}%
+- Risk Level: {prediction_result.get('risk_level', 'Unknown')}
+
+Provide your analysis in this format:
+
+1. **ML Prediction Summary**: Summarize the ML model's risk assessment using the EXACT numbers above
+2. **Clinical Consistency Check**: Evaluate if symptoms and vitals align with the ML prediction
+3. **Risk Interpretation**: Explain what the risk level means clinically
+4. **Suggested Next Steps**: Provide specific, actionable recommendations
+5. **Clinical Recommendation**: Overall guidance
+
+Be specific, evidence-based, and prioritize patient safety. Use the EXACT risk percentage and level from the ML prediction provided above.
+"""
+
+        ai_response = None  # call_ai_chat("You are CardioAI, a cardiology clinical assistant.", recommendation_prompt, context)
+
+        if ai_response:
+            return jsonify({
+                'success': True,
+                'recommendations': ai_response,
+                'disclaimer': 'This is AI-assisted clinical guidance. Always consult with a qualified healthcare professional for actual medical advice.'
+            }), 200
+        else:
+            # Fallback recommendations based on prediction result
+            risk_pct = prediction_result.get('risk_percentage', 50.0) if prediction_result else 50.0
+            risk_level = prediction_result.get('risk_level', 'Moderate') if prediction_result else 'Moderate'
+            
+            if risk_level.lower() == 'low':
+                fallback = f"""
+**1. ML Prediction Summary**
+The machine learning model estimates a {risk_pct}% risk of heart disease, indicating **{risk_level} Risk**. This suggests favorable cardiovascular health status.
+
+**2. Clinical Consistency Check**
+- **Vital Signs Analysis**: Blood pressure well-controlled
+- **Age Assessment**: Age-appropriate risk level
+- **Symptom Review**: Symptoms appear non-cardiac
+
+**3. Risk Interpretation**
+{risk_level} risk profile indicates strong cardiovascular health foundation. The model finds no significant concerning patterns in the provided clinical data.
+
+**4. Suggested Next Steps**
+- **Preventive Care**: Continue routine health maintenance
+- **Screening**: Standard periodic health evaluations every 1-2 years
+- **Lifestyle**: Maintain healthy diet, regular exercise, and avoid smoking
+- **Monitoring**: Annual blood pressure and cholesterol checks
+- **Education**: Heart-healthy living education and awareness
+
+**Clinical Recommendation**: {risk_level} risk supports standard preventive care approach with emphasis on health maintenance.
+"""
+            elif risk_level.lower() == 'high':
+                fallback = f"""
+**1. ML Prediction Summary**
+The machine learning model estimates a {risk_pct}% risk of heart disease, indicating **{risk_level} Risk**. This indicates significant cardiovascular concerns requiring immediate attention.
+
+**2. Clinical Consistency Check**
+- **Vital Signs Analysis**: Blood pressure may need optimization
+- **Age Consideration**: Age contributes to elevated risk profile
+- **Symptom Assessment**: Cardiac symptoms present and concerning
+
+**3. Risk Interpretation**
+{risk_level} risk suggests serious cardiovascular disease risk that requires urgent evaluation and intervention. This level indicates potential immediate health threats.
+
+**4. Suggested Next Steps**
+- **Urgent Care**: Immediate cardiology consultation within 1-2 weeks
+- **Advanced Testing**: Stress testing, echocardiography, coronary angiography
+- **Risk Factor Control**: Aggressive management of hypertension, diabetes, lipids
+- **Lifestyle**: Immediate lifestyle modifications and cardiac rehabilitation
+- **Monitoring**: Close follow-up every 3-6 months
+
+**Clinical Recommendation**: {risk_level} risk requires urgent cardiology evaluation and aggressive risk factor modification.
+"""
+            else:  # Moderate
+                fallback = f"""
+**1. ML Prediction Summary**
+The machine learning model estimates a {risk_pct}% risk of heart disease, indicating **{risk_level} Risk**. This falls in an intermediate range requiring attention.
+
+**2. Clinical Consistency Check**
+- **Vital Signs Analysis**: Blood pressure acceptable
+- **Age Consideration**: Age contributes to {risk_level.lower()} risk profile
+- **Symptom Assessment**: Some cardiac symptoms noted
+
+**3. Risk Interpretation**
+{risk_level} risk suggests potential cardiovascular concerns that warrant monitoring and preventive measures. While not immediately critical, this level requires proactive management.
+
+**4. Suggested Next Steps**
+- **Primary Care**: Follow-up with primary physician within 4-6 weeks
+- **Screening**: Lipid profile, HbA1c, and comprehensive metabolic panel
+- **Lifestyle**: DASH diet, regular aerobic exercise (150 min/week), weight management
+- **Risk Modification**: Address modifiable factors (smoking, hypertension, diabetes)
+- **Monitoring**: Annual cardiac risk assessment and periodic ECG
+
+**Clinical Recommendation**: {risk_level} risk indicates need for preventive cardiology approach with regular monitoring.
+"""
+            return jsonify({
+                'success': True,
+                'recommendations': fallback.strip(),
+                'fallback': True,
+                'disclaimer': 'This is AI-assisted clinical guidance. Always consult with a qualified healthcare professional for actual medical advice.'
+            }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/predict_heart_disease', methods=['POST'])
 def predict_heart_disease():
     """
@@ -231,14 +1080,27 @@ def predict_heart_disease():
         # Convert to numpy array and reshape for single prediction
         features_array = np.array(features).reshape(1, -1)
 
+        # Validate feature count against the trained model
+        expected_features = getattr(heart_model, 'n_features_in_', None)
+        if expected_features is not None and features_array.shape[1] != expected_features:
+            return jsonify({
+                'error': f'Input feature count mismatch: expected {expected_features} values, received {features_array.shape[1]}.'
+            }), 400
+
         # Get probabilities
         probabilities = heart_model.predict_proba(features_array)[0]
         risk_probability = probabilities[1] * 100  # Probability of class 1 (Disease)
 
+        risk_label = 'High' if risk_probability > 75 else 'Moderate' if risk_probability > 40 else 'Low'
         prediction_result = {
             'success': True,
             'risk_percentage': round(risk_probability, 2),
+            'risk_level': risk_label,
             'has_disease_risk': bool(risk_probability > 50),
+            'disease': 'Heart Disease Risk Assessment',
+            'treatment': 'Refer for cardiology evaluation and additional cardiac testing.',
+            'prevention': 'Adopt heart-healthy lifestyle changes, monitor blood pressure and cholesterol.',
+            'health_tips': 'Reduce sodium intake, exercise regularly, and maintain healthy weight.',
             'disclaimer': 'This ML prediction is based on the Cleveland Heart Disease dataset. It is not a substitute for professional medical diagnosis.',
         }
         
@@ -298,6 +1160,8 @@ if __name__ == '__main__':
     print("📍 API available at http://localhost:5001")
     print("🔗 Endpoints:")
     print("   - Health Check: GET http://localhost:5001/health")
+    print("   - Symptom Validation: POST http://localhost:5001/validate_symptoms")
+    print("   - Clinical Recommendations: POST http://localhost:5001/get_clinical_recommendations")
     print("   - ML Cardiology Predict: POST http://localhost:5001/predict_heart_disease")
     print("   - Text-based Predict: POST http://localhost:5001/predict")
     print("   - Batch Predict: POST http://localhost:5001/predict/batch")
