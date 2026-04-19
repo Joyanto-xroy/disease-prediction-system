@@ -13,7 +13,6 @@ function showError(message) {
     }
 }
 
-// helper to build a user-friendly message from a Supabase error object
 function formatSupabaseError(err) {
     if (!err) return 'Unknown error';
     if (typeof err === 'string') return err;
@@ -71,9 +70,7 @@ async function handleLogin(e) {
             throw error;
         }
 
-        // Read role and verification_status from JWT user_metadata.
-        // This avoids querying the profiles table, which would trigger
-        // the recursive RLS policy and cause an infinite recursion error.
+
         const meta = data.user.user_metadata || {};
         const role = meta.role || 'doctor';
         const verificationStatus = meta.verification_status;
