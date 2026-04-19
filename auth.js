@@ -198,7 +198,6 @@ async function handleRegister(e) {
         setTimeout(() => { window.location.href = '/src/view/login.html'; }, 2500);
 
     } catch (error) {
-        // display more information if available
         console.error('Registration failed:', error);
         let msg = formatSupabaseError(error);
         showError(msg);
@@ -212,7 +211,7 @@ if (loginForm) {
     loginForm.addEventListener('submit', handleLogin);
 }
 
-// show/hide role-specific inputs
+
 function updateRoleFields() {
     const role = document.getElementById('role').value;
     const doctorFields = document.getElementById('doctorFields');
@@ -222,7 +221,7 @@ function updateRoleFields() {
     if (adminFields) adminFields.style.display = role === 'admin' ? 'block' : 'none';
 }
 
-// quick check at load time to catch uninitialized database early
+
 async function sanityCheck() {
     try {
         const { data, error } = await supabase.from('profiles').select('id').limit(1);
@@ -242,7 +241,7 @@ sanityCheck();
 const roleSelect = document.getElementById('role');
 if (roleSelect) {
     roleSelect.addEventListener('change', updateRoleFields);
-    // run once to set correct visibility if the form is repopulated
+   
     updateRoleFields();
 }
 
