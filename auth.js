@@ -75,11 +75,8 @@ async function handleLogin(e) {
         const role = meta.role || 'doctor';
         const verificationStatus = meta.verification_status;
 
-        // For doctors, we also need to check verification from the DB
-        // but only if metadata doesn't have it (fallback: try profiles table).
-        // If the metadata has the verification_status, use it directly.
         if (role === 'doctor') {
-            // Try reading from metadata first
+            
             if (verificationStatus && verificationStatus !== 'verified') {
                 await supabase.auth.signOut();
                 showError('Your account is pending verification by an administrator. Please wait for approval.');
@@ -88,7 +85,7 @@ async function handleLogin(e) {
                 return;
             }
 
-            // If metadata doesn't have verification_status, query profiles with a safer approach
+
             if (!verificationStatus) {
                 try {
                     const { data: profile } = await supabase
@@ -105,8 +102,7 @@ async function handleLogin(e) {
                         return;
                     }
                 } catch (profileErr) {
-                    // If profile query fails (e.g. due to RLS), allow login to proceed
-                    // The dashboard will handle any access control
+
                     console.warn('Could not verify doctor status via profiles table:', profileErr.message);
                 }
             }
@@ -142,7 +138,6 @@ async function handleRegister(e) {
     if (password !== confirmPassword) { showError('Passwords do not match'); return; }
     if (password.length < 8) { showError('Password must be at least 8 characters'); return; }
 
-    // role-specific values
     let extraData = {};
     let fileInput = null;
 
@@ -159,7 +154,7 @@ async function handleRegister(e) {
     }
 
     if (role === 'admin') {
-        // Admins are immediately verified
+        
         extraData.verification_status = 'verified';
     }
 
@@ -178,7 +173,7 @@ async function handleRegister(e) {
             throw error;
         }
 
-        // Upload license file for doctors
+    
         if (fileInput && fileInput.files.length > 0) {
             const file = fileInput.files[0];
             const ext = file.name.split('.').pop();
@@ -189,7 +184,7 @@ async function handleRegister(e) {
             } else {
                 const { data: urlData } = supabase.storage.from('licenses').getPublicUrl(path);
                 await supabase.auth.updateUser({ data: { license_url: urlData.publicUrl } });
-                // Also update the profiles table with the path for fresh signed URLs
+                
                 await supabase.from('profiles').update({ license_url: path }).eq('id', data.user.id);
             }
         }
